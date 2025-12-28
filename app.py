@@ -66,7 +66,6 @@ def ana_sayiyi_getir(client, property_id):
 
 # --- 2. FONKSİYON: KAYNAKLARI GETİR (DETAY) ---
 def kaynaklari_getir(client, property_id):
-    # 'firstUserSource' yerine 'source' kullanıyoruz (Daha kararlı)
     request = RunRealtimeReportRequest(
         property=f"properties/{property_id}",
         dimensions=[{"name": "source"}], 
@@ -86,6 +85,8 @@ def kaynaklari_getir(client, property_id):
                 sayilar.append(count)
                 
         df = pd.DataFrame({"Kaynak": kaynaklar, "Kişi": sayilar})
+        if not df.empty:
+             df = df.sort_values(by="Kişi", ascending=False)
         return df
     except:
         return pd.DataFrame()
@@ -104,17 +105,14 @@ for ulke, pid in SITELER.items():
     with cols[col_counter % 4]:
         st.markdown(f"### {ulke}")
         
-        # 1. Adım: Kesin sayıyı al
+        # Verileri çek
         sayi = ana_sayiyi_getir(client, pid)
         toplam_global_hit += sayi
-        
-        # 2. Adım: Kaynakları al
         df = kaynaklari_getir(client, pid)
         
         # Ekrana Bas
         st.metric(label="Aktif Okuyucu", value=sayi)
         
-        # Tabloyu göster (Eğer veri varsa)
         if not df.empty:
             st.dataframe(
                 df,
@@ -126,15 +124,14 @@ for ulke, pid in SITELER.items():
                         "Yoğunluk",
                         format="%d",
                         min_value=0,
-                        max_value=int(df["Kişi"].max()) if not df.empty else 100,
+                        max_value=int(df["Kişi"].max()),
                     ),
                 },
                 height=150
             )
         else:
-            # Veri yoksa boşluk bırakma, bilgi ver
             if sayi > 0:
-                st.caption("Kaynaklar henüz işleniyor...")
+                st.caption("Kaynak verisi işleniyor...")
             else:
                 st.caption("Veri yok")
             
