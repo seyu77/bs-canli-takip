@@ -8,16 +8,13 @@ import json
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Global Haber Takip", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS MAKYYAJI (Daha Profesyonel Görünüm) ---
+# --- TASARIM (CSS) ---
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    /* Kart Tasarımı */
-    .css-1r6slb0 {border: 1px solid #333; padding: 15px; border-radius: 10px; background-color: #111;}
-    /* Büyük Sayılar */
     div[data-testid="stMetricValue"] {
         font-size: 2.2rem !important; 
-        color: #00ff41; /* Matrix Yeşili */
+        color: #00ff41; 
         text-shadow: 0 0 10px rgba(0,255,65,0.4);
     }
     div[data-testid="stMetricLabel"] {font-size: 1.1rem !important; color: #ddd; font-weight: bold;}
@@ -57,52 +54,64 @@ def get_client():
     key_dict = json.loads(st.secrets["GOOGLE_KEY"])
     return BetaAnalyticsDataClient.from_service_account_info(key_dict)
 
-# --- 1. FONKSİYON: NET SAYIYI ÇEK ---
-def ana_sayiyi_getir(client, property_id):
+# --- ANALİZ FONKSİYONU ---
+def verileri_al(client, property_id):
     try:
+        # Tek sorguda hem toplamı hem kırılımı almaya çalışıyoruz
         request = RunRealtimeReportRequest(
             property=f"properties/{property_id}",
-            metrics=[{"name": "activeUsers"}]
-        )
-        response = client.run_realtime_report(request)
-        if response.rows:
-            return int(response.rows[0].metric_values[0].value)
-        return 0
-    except:
-        return 0
-
-# --- 2. FONKSİYON: KAYNAKLARI ÇEK ---
-def kaynaklari_getir(client, property_id):
-    try:
-        request = RunRealtimeReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=[{"name": "firstUserSource"}], # Kaynak (google, t.co)
+            dimensions=[{"name": "source"}], # 'firstUserSource' yerine 'source' daha günceldir
             metrics=[{"name": "activeUsers"}],
-            limit=5
+            limit=10
         )
         response = client.run_realtime_report(request)
+        
         kaynaklar = []
         sayilar = []
+        tablo_toplami = 0
         
         if response.rows:
             for row in response.rows:
-                source_name = row.dimension_values[0].value
-                count = int(row.metric_values[0].value)
-                # (not set) gelirse düzelt
-                if source_name == "(not set)": source_name = "Direct / Bilinmiyor"
-                kaynaklar.append(source_name)
-                sayilar.append(count)
+                src = row.dimension_values[0].value
+                cnt = int(row.metric_values[0].value)
                 
+                # GA4'te boş gelen veriyi olduğu gibi (not set) bırakıyoruz
+                if src == "": src = "(not set)"
+                
+                kaynaklar.append(src)
+                sayilar.append(cnt)
+                tablo_toplami += cnt
+        
+        # Gerçek toplam sayıyı (activeUsers) ayrıca çekelim ki eksik kalmasın
+        # (Bazen kırılımların toplamı, ana sayıdan düşük olabilir)
+        request_total = RunRealtimeReportRequest(
+            property=f"properties/{property_id}",
+            metrics=[{"name": "activeUsers"}]
+        )
+        resp_total = client.run_realtime_report(request_total)
+        gercek_toplam = 0
+        if resp_total.rows:
+            gercek_toplam = int(resp_total.rows[0].metric_values[0].value)
+            
+        # Eğer kırılımların toplamı ana sayıdan azsa, kalanı "GA4 İşliyor" (Processing) olarak ekle
+        fark = gercek_toplam - tablo_toplami
+        if fark > 0:
+            kaynaklar.append("(processing...)")
+            sayilar.append(fark)
+            
         df = pd.DataFrame({"Kaynak": kaynaklar, "Kişi": sayilar})
+        
+        # Sıralama ve Temizlik
         if not df.empty:
-             df = df.sort_values(by="Kişi", ascending=False)
-        return df
-    except:
-        return pd.DataFrame()
+             df = df.sort_values(by="Kişi", ascending=False).head(5)
+             
+        return gercek_toplam, df
+        
+    except Exception as e:
+        return 0, pd.DataFrame()
 
-# --- ARAYÜZ BAŞLANGICI ---
+# --- ARAYÜZ ---
 st.markdown(f"<h2 style='text-align: center;'>🌍 Global Haber Trafik Odası</h2>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align: center; color: #666;'>Son Güncelleme: {time.strftime('%H:%M:%S')}</p>", unsafe_allow_html=True)
 st.divider()
 
 client = get_client()
@@ -114,20 +123,14 @@ toplam_global_hit = 0
 for ulke, pid in SITELER.items():
     with cols[col_counter % 4]:
         
-        # --- VERİ ÇEKME ---
-        sayi = ana_sayiyi_getir(client, pid)
+        # Veriyi Çek
+        sayi, df = verileri_al(client, pid)
         toplam_global_hit += sayi
-        df = kaynaklari_getir(client, pid)
         
-        # --- YAMA: Eğer sayı var ama tablo boşsa, yapay tablo oluştur ---
-        if sayi > 0 and df.empty:
-            df = pd.DataFrame({"Kaynak": ["Direct / Anlık"], "Kişi": [sayi]})
-        
-        # --- KART GÖRÜNÜMÜ ---
+        # Göster
         st.markdown(f"#### {ulke}")
         st.metric(label="Aktif Okuyucu", value=sayi)
         
-        # Tablo Gösterimi
         if not df.empty:
             st.dataframe(
                 df,
@@ -139,14 +142,13 @@ for ulke, pid in SITELER.items():
                         "Trafik",
                         format="%d",
                         min_value=0,
-                        max_value=int(df["Kişi"].max()),
+                        max_value=int(df["Kişi"].max()) if df["Kişi"].max() > 0 else 100,
                     ),
                 },
                 height=150
             )
         else:
-            # Gerçekten 0 ise
-            st.caption("Hareket yok")
+            st.caption("Veri Yok")
             
         st.divider()
         
@@ -155,15 +157,9 @@ for ulke, pid in SITELER.items():
 # --- ALT TOPLAM ---
 st.markdown("---")
 st.markdown(f"""
-    <div style="
-        background: linear-gradient(90deg, rgba(20,20,20,1) 0%, rgba(50,50,50,1) 100%); 
-        padding: 20px; 
-        border-radius: 15px; 
-        text-align: center; 
-        border: 1px solid #444;
-        box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);">
-        <h3 style="margin:0; color: #aaa; font-size: 1rem; letter-spacing: 2px;">TOPLAM GLOBAL ANLIK TRAFİK</h3>
-        <h1 style="margin:0; color: #ffe600; font-size: 4rem; font-family: monospace;">{toplam_global_hit}</h1>
+    <div style="background-color:#111; padding:20px; border-radius:15px; text-align:center; border:1px solid #333;">
+        <h3 style="margin:0; color:#aaa;">TOPLAM GLOBAL ANLIK TRAFİK</h3>
+        <h1 style="margin:0; color:#ffe600; font-size:4rem;">{toplam_global_hit}</h1>
     </div>
 """, unsafe_allow_html=True)
 
