@@ -8,7 +8,7 @@ import json
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Global Haber Takip", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS TASARIM ---
+# --- CSS (Makyaj) ---
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 2rem;}
@@ -19,7 +19,6 @@ st.markdown("""
         text-shadow: 0 0 10px rgba(0,255,65,0.4);
     }
     div[data-testid="stMetricLabel"] {font-size: 1.1rem !important; color: #ddd; font-weight: bold;}
-    /* Tablo Fontunu Küçült */
     div[data-testid="stDataFrame"] {font-size: 0.8rem;}
     </style>
 """, unsafe_allow_html=True)
@@ -57,58 +56,58 @@ def get_client():
     key_dict = json.loads(st.secrets["GOOGLE_KEY"])
     return BetaAnalyticsDataClient.from_service_account_info(key_dict)
 
-# --- ANALİZ MOTORU ---
+# --- VERİ ÇEKME MOTORU ---
 def verileri_al(client, property_id):
     try:
-        # 1. SORGUNUN KRALINI YAPIYORUZ:
-        # firstUserSource DEĞİL, direkt 'source' kullanıyoruz.
-        # Bu veri anlıktır ve işlemesi gerekmez.
-        request = RunRealtimeReportRequest(
+        # 1. Önce Kesin Sayıyı Al
+        req_total = RunRealtimeReportRequest(
             property=f"properties/{property_id}",
-            dimensions=[{"name": "source"}],  # BURAYI DEĞİŞTİRDİK!
-            metrics=[{"name": "activeUsers"}],
-            limit=10 
+            metrics=[{"name": "activeUsers"}]
         )
-        response = client.run_realtime_report(request)
+        res_total = client.run_realtime_report(req_total)
+        total_users = 0
+        if res_total.rows:
+            total_users = int(res_total.rows[0].metric_values[0].value)
+
+        # 2. Kaynakları Almayı Dene
+        req_source = RunRealtimeReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=[{"name": "source"}], # 'firstUserSource' değil 'source'
+            metrics=[{"name": "activeUsers"}],
+            limit=5
+        )
+        res_source = client.run_realtime_report(req_source)
         
         kaynaklar = []
         sayilar = []
-        toplam_sayi = 0
         
-        if response.rows:
-            for row in response.rows:
+        # Eğer Google Kaynak Listesi Verirse Doldur
+        if res_source.rows:
+            for row in res_source.rows:
                 src = row.dimension_values[0].value
                 cnt = int(row.metric_values[0].value)
                 
-                # Temiz Görünüm İçin Ufak Düzeltmeler
-                if src == "(direct)": src = "Doğrudan (Direct)"
-                if src == "t.co": src = "Twitter (t.co)"
+                # İsim düzeltmeleri
+                if src == "(direct)": src = "Doğrudan"
+                if src == "t.co": src = "Twitter"
+                if src == "(not set)": src = "Bilinmiyor"
                 
                 kaynaklar.append(src)
                 sayilar.append(cnt)
-                toplam_sayi += cnt
         
-        # Eğer hiç veri dönmediyse
-        if toplam_sayi == 0:
-            # Belki boyut boş geldi ama toplam sayı var mı diye garanti kontrolü yapalım
-            req_check = RunRealtimeReportRequest(
-                 property=f"properties/{property_id}",
-                 metrics=[{"name": "activeUsers"}]
-            )
-            res_check = client.run_realtime_report(req_check)
-            if res_check.rows:
-                gercek_toplam = int(res_check.rows[0].metric_values[0].value)
-                if gercek_toplam > 0:
-                    return gercek_toplam, pd.DataFrame({"Kaynak": ["Genel / (not set)"], "Kişi": [gercek_toplam]})
-            return 0, pd.DataFrame()
-
+        # --- ZORLAMA MODU (FORCE FILL) ---
+        # Eğer kullanıcı var (total_users > 0) ama kaynak listesi BOŞ ise
+        if total_users > 0 and not kaynaklar:
+            kaynaklar = ["Genel Trafik / (Google Gizliyor)"]
+            sayilar = [total_users]
+        
+        # Veri Çerçevesi Oluştur
         df = pd.DataFrame({"Kaynak": kaynaklar, "Kişi": sayilar})
         
-        # Tabloyu güzelleştir
         if not df.empty:
-             df = df.sort_values(by="Kişi", ascending=False).head(5)
+             df = df.sort_values(by="Kişi", ascending=False)
              
-        return toplam_sayi, df
+        return total_users, df
         
     except Exception as e:
         return 0, pd.DataFrame()
@@ -134,7 +133,11 @@ for ulke, pid in SITELER.items():
         st.markdown(f"#### {ulke}")
         st.metric(label="Anlık Okuyucu", value=sayi)
         
-        if not df.empty and sayi > 0:
+        if sayi > 0:
+            # Eğer bir şekilde df boş kaldıysa bile doldur
+            if df.empty:
+                df = pd.DataFrame({"Kaynak": ["Genel Akış"], "Kişi": [sayi]})
+                
             st.dataframe(
                 df,
                 use_container_width=True,
