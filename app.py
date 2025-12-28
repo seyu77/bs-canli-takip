@@ -8,21 +8,19 @@ import json
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Global Haber Takip", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS (Makyaj) ---
+# --- CSS TASARIM ---
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    /* Metrik Stilleri */
+    /* Yeşil Sayılar */
     div[data-testid="stMetricValue"] {
         font-size: 2.2rem !important; 
         color: #00ff41; 
-        text-shadow: 0 0 15px rgba(0,255,65,0.3);
+        text-shadow: 0 0 10px rgba(0,255,65,0.4);
     }
-    div[data-testid="stMetricLabel"] {font-size: 1.1rem !important; color: #ddd; font-weight: bold;}
-    
-    /* Tablo Başlıklarını Gizle/Küçült */
-    thead tr th:first-child {display:none}
-    tbody tr td:first-child {display:none}
+    div[data-testid="stMetricLabel"] {font-size: 1.0rem !important; color: #ccc;}
+    /* Tablo Düzeni */
+    div[data-testid="stDataFrame"] {width: 100%;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -33,7 +31,7 @@ if "giris_yapildi" not in st.session_state:
 if not st.session_state["giris_yapildi"]:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.markdown("### 🔒 Haber Merkezi Giriş")
+        st.markdown("### 🔒 Giriş")
         sifre = st.text_input("Şifre:", type="password")
         if st.button("Giriş Yap"):
             if sifre == st.secrets["ADMIN_SIFRESI"]:
@@ -59,10 +57,10 @@ def get_client():
     key_dict = json.loads(st.secrets["GOOGLE_KEY"])
     return BetaAnalyticsDataClient.from_service_account_info(key_dict)
 
-# --- VERİ ÇEKME MOTORU ---
+# --- AKILLI VERİ ÇEKME FONKSİYONU ---
 def verileri_al(client, property_id):
     try:
-        # ÖNCE: Toplam kesin sayıyı al
+        # 1. ADIM: KESİN SAYIYI AL
         req_total = RunRealtimeReportRequest(
             property=f"properties/{property_id}",
             metrics=[{"name": "activeUsers"}]
@@ -72,7 +70,7 @@ def verileri_al(client, property_id):
         if res_total.rows:
             total_users = int(res_total.rows[0].metric_values[0].value)
 
-        # SONRA: Kaynak dağılımını al (firstUserSource = Kullanıcıyla ilk ilişkilendirilen kaynak)
+        # 2. ADIM: KAYNAKLARI AL
         req_source = RunRealtimeReportRequest(
             property=f"properties/{property_id}",
             dimensions=[{"name": "firstUserSource"}], 
@@ -96,26 +94,27 @@ def verileri_al(client, property_id):
                 sayilar.append(cnt)
                 tablo_toplami += cnt
         
-        # --- KRİTİK EŞİK KONTROLÜ ---
-        # Eğer toplam kullanıcı var ama kaynak listesi boş geldiyse (Google Gizliyorsa)
+        # --- ZORLAMA MANTIĞI (FORCE FILL) ---
+        # Eğer toplam kullanıcı var ama kaynak listesi BOŞ ise
+        # Tabloyu "Genel Trafik" olarak biz dolduruyoruz.
         if total_users > 0 and len(kaynaklar) == 0:
-            kaynaklar.append("Veri Eşiği Altında / Direct")
-            sayilar.append(total_users)
+            kaynaklar = ["Genel / Direct"]
+            sayilar = [total_users]
         
-        # Eğer toplam kullanıcı, listedekilerden fazlaysa, aradaki farkı ekle
+        # Eğer liste var ama eksikse (Örn: Toplam 10, Liste 8) -> Kalanı ekle
         elif total_users > tablo_toplami:
             fark = total_users - tablo_toplami
-            kaynaklar.append("Diğer / İşleniyor")
+            kaynaklar.append("Diğer")
             sayilar.append(fark)
 
-        # Tabloyu oluştur
+        # DataFrame oluştur
         df = pd.DataFrame({"Kaynak": kaynaklar, "Kişi": sayilar})
         if not df.empty:
              df = df.sort_values(by="Kişi", ascending=False)
              
         return total_users, df
         
-    except Exception as e:
+    except Exception:
         return 0, pd.DataFrame()
 
 # --- ARAYÜZ ---
@@ -137,10 +136,14 @@ for ulke, pid in SITELER.items():
         
         # Başlık ve Sayı
         st.markdown(f"#### {ulke}")
-        st.metric(label="Anlık Okuyucu", value=sayi)
+        st.metric(label="Aktif Okuyucu", value=sayi)
         
-        # Tablo
-        if not df.empty and sayi > 0:
+        # Tablo Gösterimi (Artık İşleniyor yazısı yok, direkt tablo var)
+        if sayi > 0:
+            # Eğer df bir şekilde boşsa bile dolu göster
+            if df.empty:
+                df = pd.DataFrame({"Kaynak": ["Genel / Direct"], "Kişi": [sayi]})
+                
             st.dataframe(
                 df,
                 use_container_width=True,
@@ -148,17 +151,17 @@ for ulke, pid in SITELER.items():
                 column_config={
                     "Kaynak": st.column_config.TextColumn("Kaynak"),
                     "Kişi": st.column_config.ProgressColumn(
-                        "Trafik",
+                        "Yoğunluk",
                         format="%d",
                         min_value=0,
-                        max_value=int(sayi), # Max değeri toplam sayı yapalım ki bar doğru orantılı olsun
+                        max_value=int(sayi), 
                     ),
                 },
                 height=150
             )
         else:
-            # 0 ise
-            st.markdown("<div style='text-align:center; color:#444; margin-top:10px;'>Hareketsiz</div>", unsafe_allow_html=True)
+            # Sadece gerçekten 0 ise bu çıkar
+            st.caption("Hareket yok")
             
         st.divider()
         
@@ -167,9 +170,9 @@ for ulke, pid in SITELER.items():
 # --- ALT TOPLAM ---
 st.markdown("---")
 st.markdown(f"""
-    <div style="background-color:#0e1117; padding:20px; border-radius:15px; text-align:center; border:1px solid #333; box-shadow: 0 0 30px rgba(0,255,65,0.1);">
-        <h3 style="margin:0; color:#888; font-size:1rem;">TOPLAM GLOBAL ANLIK TRAFİK</h3>
-        <h1 style="margin:0; color:#ffe600; font-size:4.5rem; font-family:sans-serif;">{toplam_global_hit}</h1>
+    <div style="background-color:#111; padding:15px; border-radius:15px; text-align:center; border:1px solid #333;">
+        <h3 style="margin:0; color:#aaa; font-size:1rem;">TOPLAM ANLIK TRAFİK</h3>
+        <h1 style="margin:0; color:#ffe600; font-size:4rem;">{toplam_global_hit}</h1>
     </div>
 """, unsafe_allow_html=True)
 
