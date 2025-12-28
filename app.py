@@ -12,15 +12,15 @@ st.set_page_config(page_title="Global Haber Takip", layout="wide", initial_sideb
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    /* Yeşil Sayılar */
+    /* Metrik Stilleri */
     div[data-testid="stMetricValue"] {
         font-size: 2.2rem !important; 
         color: #00ff41; 
         text-shadow: 0 0 10px rgba(0,255,65,0.4);
     }
-    div[data-testid="stMetricLabel"] {font-size: 1.0rem !important; color: #ccc;}
-    /* Tablo Düzeni */
-    div[data-testid="stDataFrame"] {width: 100%;}
+    div[data-testid="stMetricLabel"] {font-size: 1.1rem !important; color: #ddd; font-weight: bold;}
+    /* Tablo Fontunu Küçült */
+    div[data-testid="stDataFrame"] {font-size: 0.8rem;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -31,7 +31,7 @@ if "giris_yapildi" not in st.session_state:
 if not st.session_state["giris_yapildi"]:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.markdown("### 🔒 Giriş")
+        st.markdown("### 🔒 Haber Merkezi Giriş")
         sifre = st.text_input("Şifre:", type="password")
         if st.button("Giriş Yap"):
             if sifre == st.secrets["ADMIN_SIFRESI"]:
@@ -57,64 +57,60 @@ def get_client():
     key_dict = json.loads(st.secrets["GOOGLE_KEY"])
     return BetaAnalyticsDataClient.from_service_account_info(key_dict)
 
-# --- AKILLI VERİ ÇEKME FONKSİYONU ---
+# --- ANALİZ MOTORU ---
 def verileri_al(client, property_id):
     try:
-        # 1. ADIM: KESİN SAYIYI AL
-        req_total = RunRealtimeReportRequest(
+        # 1. SORGUNUN KRALINI YAPIYORUZ:
+        # firstUserSource DEĞİL, direkt 'source' kullanıyoruz.
+        # Bu veri anlıktır ve işlemesi gerekmez.
+        request = RunRealtimeReportRequest(
             property=f"properties/{property_id}",
-            metrics=[{"name": "activeUsers"}]
-        )
-        res_total = client.run_realtime_report(req_total)
-        total_users = 0
-        if res_total.rows:
-            total_users = int(res_total.rows[0].metric_values[0].value)
-
-        # 2. ADIM: KAYNAKLARI AL
-        req_source = RunRealtimeReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=[{"name": "firstUserSource"}], 
+            dimensions=[{"name": "source"}],  # BURAYI DEĞİŞTİRDİK!
             metrics=[{"name": "activeUsers"}],
-            limit=5
+            limit=10 
         )
-        res_source = client.run_realtime_report(req_source)
+        response = client.run_realtime_report(request)
         
         kaynaklar = []
         sayilar = []
-        tablo_toplami = 0
+        toplam_sayi = 0
         
-        if res_source.rows:
-            for row in res_source.rows:
+        if response.rows:
+            for row in response.rows:
                 src = row.dimension_values[0].value
                 cnt = int(row.metric_values[0].value)
                 
-                if src == "(not set)": src = "Direct / Bilinmiyor"
+                # Temiz Görünüm İçin Ufak Düzeltmeler
+                if src == "(direct)": src = "Doğrudan (Direct)"
+                if src == "t.co": src = "Twitter (t.co)"
                 
                 kaynaklar.append(src)
                 sayilar.append(cnt)
-                tablo_toplami += cnt
+                toplam_sayi += cnt
         
-        # --- ZORLAMA MANTIĞI (FORCE FILL) ---
-        # Eğer toplam kullanıcı var ama kaynak listesi BOŞ ise
-        # Tabloyu "Genel Trafik" olarak biz dolduruyoruz.
-        if total_users > 0 and len(kaynaklar) == 0:
-            kaynaklar = ["Genel / Direct"]
-            sayilar = [total_users]
-        
-        # Eğer liste var ama eksikse (Örn: Toplam 10, Liste 8) -> Kalanı ekle
-        elif total_users > tablo_toplami:
-            fark = total_users - tablo_toplami
-            kaynaklar.append("Diğer")
-            sayilar.append(fark)
+        # Eğer hiç veri dönmediyse
+        if toplam_sayi == 0:
+            # Belki boyut boş geldi ama toplam sayı var mı diye garanti kontrolü yapalım
+            req_check = RunRealtimeReportRequest(
+                 property=f"properties/{property_id}",
+                 metrics=[{"name": "activeUsers"}]
+            )
+            res_check = client.run_realtime_report(req_check)
+            if res_check.rows:
+                gercek_toplam = int(res_check.rows[0].metric_values[0].value)
+                if gercek_toplam > 0:
+                    return gercek_toplam, pd.DataFrame({"Kaynak": ["Genel / (not set)"], "Kişi": [gercek_toplam]})
+            return 0, pd.DataFrame()
 
-        # DataFrame oluştur
         df = pd.DataFrame({"Kaynak": kaynaklar, "Kişi": sayilar})
-        if not df.empty:
-             df = df.sort_values(by="Kişi", ascending=False)
-             
-        return total_users, df
         
-    except Exception:
+        # Tabloyu güzelleştir
+        if not df.empty:
+             df = df.sort_values(by="Kişi", ascending=False).head(5)
+             
+        return toplam_sayi, df
+        
+    except Exception as e:
         return 0, pd.DataFrame()
 
 # --- ARAYÜZ ---
@@ -134,16 +130,11 @@ for ulke, pid in SITELER.items():
         sayi, df = verileri_al(client, pid)
         toplam_global_hit += sayi
         
-        # Başlık ve Sayı
+        # Göster
         st.markdown(f"#### {ulke}")
-        st.metric(label="Aktif Okuyucu", value=sayi)
+        st.metric(label="Anlık Okuyucu", value=sayi)
         
-        # Tablo Gösterimi (Artık İşleniyor yazısı yok, direkt tablo var)
-        if sayi > 0:
-            # Eğer df bir şekilde boşsa bile dolu göster
-            if df.empty:
-                df = pd.DataFrame({"Kaynak": ["Genel / Direct"], "Kişi": [sayi]})
-                
+        if not df.empty and sayi > 0:
             st.dataframe(
                 df,
                 use_container_width=True,
@@ -151,17 +142,16 @@ for ulke, pid in SITELER.items():
                 column_config={
                     "Kaynak": st.column_config.TextColumn("Kaynak"),
                     "Kişi": st.column_config.ProgressColumn(
-                        "Yoğunluk",
+                        "Trafik",
                         format="%d",
                         min_value=0,
-                        max_value=int(sayi), 
+                        max_value=int(sayi),
                     ),
                 },
                 height=150
             )
         else:
-            # Sadece gerçekten 0 ise bu çıkar
-            st.caption("Hareket yok")
+            st.caption("Veri Yok")
             
         st.divider()
         
