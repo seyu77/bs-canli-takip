@@ -8,22 +8,49 @@ import os
 # --- AYARLAR ---
 st.set_page_config(page_title="Bitcoin Sistemi Canlı", layout="wide")
 
-# SİTE ID LİSTESİ
+# --- GÜVENLİK DUVARI (BEKÇİ) ---
+# Eğer giriş yapılmadıysa şifre sorar
+if "giris_yapildi" not in st.session_state:
+    st.session_state["giris_yapildi"] = False
+
+if not st.session_state["giris_yapildi"]:
+    st.title("🔒 Giriş Yap")
+    # Şifre kutusu
+    sifre = st.text_input("Şifreyi Giriniz:", type="password")
+    
+    if st.button("Giriş"):
+        # Secrets'tan şifreyi kontrol et
+        if sifre == st.secrets["ADMIN_SIFRESI"]:
+            st.session_state["giris_yapildi"] = True
+            st.success("Giriş başarılı! Yönlendiriliyorsunuz...")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("Hatalı Şifre!")
+    
+    st.stop() # Şifre girilmediyse buradan aşağısını asla çalıştırma!
+
+# ==========================================
+# BURADAN AŞAĞISI VERİ ÇEKME İŞLEMLERİ
+# ==========================================
+
+# SİTE ID LİSTESİ (Senin Verdiğin ID'ler)
 SITELER = {
-    "TR (Türkçe)": "307941301",     # TR ID'sini buraya
-    "EN (İngilizce)": "358993900",  # EN ID'sini buraya
-    "ES (İspanyolca)": "514697392",  # <--- BURAYA İSPANYOLCA ID GELECEK
-    "CN (Çince)": "514704263",      # CN ID'sini buraya
-    "JP (Japonya)": "514667124",    # JP ID'sini buraya
-    "RU (Rusya)": "514679418",      # RU ID'sini buraya
-    "KR (Korece)": "517245619"      # KR ID'sini buraya
+    "TR (Türkçe)": "307941301",
+    "EN (İngilizce)": "358993900",
+    "ES (İspanyolca)": "514697392",
+    "CN (Çince)": "514704263",
+    "JP (Japonya)": "514667124",
+    "RU (Rusya)": "514679418",
+    "KR (Korece)": "517245619"
 }
 
-# Google Key'i Streamlit Secrets'tan alacağız (Güvenlik için)
+# Google Key'i Secrets'tan al
 def get_client():
     key_dict = json.loads(st.secrets["GOOGLE_KEY"])
     return BetaAnalyticsDataClient.from_service_account_info(key_dict)
 
+# API'den anlık veri çeken fonksiyon
 def anlik_hit_getir(client, property_id):
     request = RunRealtimeReportRequest(
         property=f"properties/{property_id}",
@@ -37,32 +64,35 @@ def anlik_hit_getir(client, property_id):
     except:
         return 0
 
-# --- ARAYÜZ ---
+# --- ARAYÜZ TASARIMI ---
 st.title("🌐 Anlık Takip Merkezi (Son 30 Dk)")
 
-# Yenileme butonu
-if st.button('Verileri Yenile'):
+# Manuel yenileme butonu (Gerekirse diye)
+if st.button('Verileri Şimdi Yenile'):
     st.rerun()
 
+# Verileri çekmeye başla
 client = get_client()
-cols = st.columns(4) # 4'lü satır yapısı
+cols = st.columns(4) # 4 sütunlu yapı
 
 toplam = 0
+# Tüm siteleri döngüye sok ve ekrana bas
 for i, (ulke, pid) in enumerate(SITELER.items()):
     val = anlik_hit_getir(client, pid)
     toplam += val
     
-    # Renklendirme mantığı (Delta ile artış azalış gibi gösterelim)
+    # Ekrana yerleştir
     col_index = i % 4
     with cols[col_index]:
+        # Eğer hit 50'den fazlaysa yeşil, 200'den fazlaysa kırmızı gibi vurgular yapabilirsin
         st.metric(label=ulke, value=val)
 
 st.divider()
+# Toplam sayıyı büyük göster
 st.metric(label="TOPLAM ANLIK OKUYUCU", value=toplam)
 
-# Otomatik yenileme için basit bir bilgi
+st.caption(f"Son güncelleme: {time.strftime('%H:%M:%S')}")
 
-st.caption(f"Son güncelleme: {time.strftime('%H:%M:%S')}. Sayfayı yenileyerek güncelleyebilirsin.")
-
+# --- OTOMATİK YENİLEME (60 SANİYE) ---
 time.sleep(60)
 st.rerun()
