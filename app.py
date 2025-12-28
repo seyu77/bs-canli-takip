@@ -61,4 +61,8 @@ st.divider()
 st.metric(label="TOPLAM ANLIK OKUYUCU", value=toplam)
 
 # Otomatik yenileme için basit bir bilgi
+
 st.caption(f"Son güncelleme: {time.strftime('%H:%M:%S')}. Sayfayı yenileyerek güncelleyebilirsin.")
+
+time.sleep(60)
+st.rerun()
